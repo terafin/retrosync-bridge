@@ -139,14 +139,22 @@ def webdav_to_rsm(webdav_file: Path) -> None:
 # metadata.json stating it, so the system is READ, never inferred from a display
 # name. Only the WebDAV destination needs a core name, and that is the seven-row
 # table below -- stable, keyed on slug, and not a naming negotiation.
+# slug -> RetroArch core directory name.
+#
+# OBSERVED means the directory exists in the live WebDAV tree, so RetroArch has
+# created or read it and the name is known to be right. ASSUMED means the name
+# comes from the arcade's core folders and the plan, and nothing has confirmed
+# the iPhone's RetroArch uses it. An assumed row that is wrong does not fail --
+# it writes a save into a folder RetroArch never scans and still logs
+# [RSM->WEBDAV] success. Do not let an assumed row stand unmarked.
 SLUG_TO_CORE = {
-    "snes": "Snes9x",
-    "n64": "Mupen64Plus-Next",
-    "gameboy": "Gambatte",
-    "nes": "FCEUmm",
-    "gba": "mGBA",
-    "psx": "Beetle PSX HW",
-    "genesis": "Genesis Plus GX",
+    "snes": "Snes9x",                   # observed: /webdav/saves/Snes9x
+    "gameboy": "Gambatte",              # observed: /webdav/saves/Gambatte
+    "nes": "FCEUmm",                    # ASSUMED
+    "gba": "mGBA",                      # ASSUMED
+    "psx": "Beetle PSX HW",             # ASSUMED
+    "n64": "Mupen64Plus-Next",          # ASSUMED
+    "genesis": "Genesis Plus GX",       # ASSUMED
 }
 
 
@@ -198,7 +206,14 @@ def rsm_to_webdav(rsm_file: Path) -> None:
         # to the old display-name map so behaviour degrades rather than breaks.
         core = next((k for k, v in CORE_MAP.items() if v == system), None)
     if not core:
-        print(f"[SKIP] Unknown system: {system} (slug={slug})")
+        if slug:
+            # A real slug with no core mapping: a decision nobody has made yet,
+            # not noise. Distinct marker and its own count so it cannot hide
+            # inside the unknown-system total.
+            print(f"[UNMAPPED] slug={slug!r} system={system!r} "
+                  f"-- add it to SLUG_TO_CORE before trusting this platform")
+        else:
+            print(f"[SKIP] Unknown system: {system} (no metadata.json record)")
         return
 
     webdav_dir = WEBDAV_SAVES / core

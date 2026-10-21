@@ -15,6 +15,8 @@ echo "--- .srm copies under the game (should be exactly 1) ---"
 echo "  $(find "/tmp/bt/rsm/$SYS/Crystal" -name 'payload.srm' | wc -l)"
 echo "--- rtc dir untouched? ---"
 echo "  save-b2 contents: $(ls "/tmp/bt/rsm/$SYS/Crystal/save-b2")"
+FAIL=0
 echo "--- stability ---"
-[ "$A" = "$Bs" ] && echo "  pass1==pass2" || echo "  pass1!=pass2"
-[ "$Bs" = "$C" ] && echo "  pass2==pass3" || echo "  pass2!=pass3"
+[ "$A" = "$Bs" ] && echo "  pass1==pass2" || { echo "  pass1!=pass2"; FAIL=1; }
+[ "$Bs" = "$C" ] && echo "  pass2==pass3" || { echo "  pass2!=pass3"; FAIL=1; }
+[ "$FAIL" = "0" ] && echo "CRYSTAL PASS" || { echo "CRYSTAL FAIL"; exit 1; }
