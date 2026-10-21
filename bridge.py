@@ -15,8 +15,8 @@ import shutil
 import time
 from pathlib import Path
 
-WEBDAV_SAVES = Path("/webdav")
-RSM_SAVES = Path("/rsm")
+WEBDAV_SAVES = Path(os.environ.get("WEBDAV_SAVES", "/webdav"))
+RSM_SAVES = Path(os.environ.get("RSM_SAVES", "/rsm"))
 
 # RetroArch core name -> RSM system name
 CORE_MAP = {
@@ -91,7 +91,7 @@ def webdav_to_rsm(webdav_file: Path) -> None:
 
 def rsm_to_webdav(rsm_file: Path) -> None:
     """RSM -> WebDAV (iPhone)."""
-    if not rsm_file.exists() or rsm_file.name != "payload.sav":
+    if not rsm_file.exists() or not rsm_file.name.startswith("payload."):
         return
     try:
         parts = rsm_file.relative_to(RSM_SAVES).parts
@@ -109,7 +109,7 @@ def rsm_to_webdav(rsm_file: Path) -> None:
         print(f"[SKIP] Unknown system: {system}")
         return
 
-    webdav_dir = WEBDAV_SAVES / core
+    webdav_dir = WEBDAV_SAVES / "saves" / core
     webdav_dir.mkdir(parents=True, exist_ok=True)
     dest = webdav_dir / f"{game}.srm"
     if dest.exists() and file_hash(rsm_file) == file_hash(dest):
