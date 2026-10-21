@@ -23,7 +23,7 @@ CORE_MAP = {
     # Nintendo
     "Gambatte": "Nintendo Game Boy",
     "SameBoy": "Nintendo Game Boy",
-    "mGBA": "Nintendo Game Boy Advance",
+    "mGBA": "Game Boy Advance",
     "VBA-M": "Nintendo Game Boy Advance",
     "FCEUmm": "Nintendo Entertainment System",
     "Nestopia": "Nintendo Entertainment System",
@@ -35,12 +35,12 @@ CORE_MAP = {
     "melonDS": "Nintendo DS",
     "DeSmuME": "Nintendo DS",
     # Sega
-    "Genesis Plus GX": "Sega Genesis",
+    "Genesis Plus GX": "Sega Genesis-Mega Drive",
     "PicoDrive": "Sega Genesis",
     "Beetle Saturn": "Sega Saturn",
     "YabaSanshiro": "Sega Saturn",
     # Sony
-    "Beetle PSX HW": "Sony PlayStation",
+    "Beetle PSX HW": "PlayStation",
     "PCSX ReARMed": "Sony PlayStation",
     "SwanStation": "Sony PlayStation",
     "PPSSPP": "Sony PSP",
@@ -68,6 +68,20 @@ def webdav_to_rsm(webdav_file: Path) -> None:
     game = webdav_file.stem
     rsm_dir = RSM_SAVES / system / game
 
+    # Prefer the folder the game's own record already lives in, so the reverse
+    # adds to where the game is rather than to a display-name variant. Correcting
+    # CORE_MAP's strings is a patch, not a fix: the store carries both names for
+    # some systems, and only the record can say which one this game uses.
+    if not rsm_dir.exists():
+        for cand in RSM_SAVES.iterdir() if RSM_SAVES.exists() else []:
+            game_dir = cand / game
+            if cand.is_dir() and game_dir.exists():
+                sample = next(game_dir.rglob("payload.*"), None)
+                want_slug = next((sl for sl, c in SLUG_TO_CORE.items() if c == core), None)
+                if sample and want_slug and read_system_slug(sample) == want_slug:
+                    rsm_dir = game_dir
+                    break
+
     # Choose a save dir that holds THIS extension, newest first.
     #
     # The previous rule took the newest-mtime dir regardless of what it held, so a
@@ -87,9 +101,26 @@ def webdav_to_rsm(webdav_file: Path) -> None:
     #    WebDAV and would otherwise copy it straight back, gaining a duplicate
     #    under another save's record.
     src_hash = file_hash(webdav_file)
-    for other in rsm_dir.rglob("payload.*") if rsm_dir.exists() else []:
-        if other.is_file() and file_hash(other) == src_hash:
+    store_payloads = [p for p in (rsm_dir.rglob("payload.*") if rsm_dir.exists() else [])
+                      if p.is_file()]
+    for other in store_payloads:
+        if file_hash(other) == src_hash:
             return
+
+    # Is this actually an iPhone edit, or an echo of what we copied out?
+    #
+    # shutil.copy2 preserves mtime, so a file the forward direction wrote carries
+    # the STORE payload's timestamp. A genuine edit on the device sets mtime to
+    # now. So the reverse writes only when the WebDAV copy is strictly newer than
+    # everything the store already holds for this game — otherwise a stale WebDAV
+    # file silently overwrites a newer store save on every pass, which is exactly
+    # what made the real-change probe fail.
+    try:
+        src_mtime = webdav_file.stat().st_mtime
+        if store_payloads and src_mtime <= max(p.stat().st_mtime for p in store_payloads):
+            return
+    except OSError:
+        pass
     #
     # 2. A dir is a valid target only if it already holds THIS extension, or
     #    holds no payload at all. A dir holding a different component is its own
@@ -139,14 +170,22 @@ def webdav_to_rsm(webdav_file: Path) -> None:
 # metadata.json stating it, so the system is READ, never inferred from a display
 # name. Only the WebDAV destination needs a core name, and that is the seven-row
 # table below -- stable, keyed on slug, and not a naming negotiation.
+# slug -> RetroArch core directory name.
+#
+# OBSERVED means the directory exists in the live WebDAV tree, so RetroArch has
+# created or read it and the name is known to be right. ASSUMED means the name
+# comes from the arcade's core folders and the plan, and nothing has confirmed
+# the iPhone's RetroArch uses it. An assumed row that is wrong does not fail --
+# it writes a save into a folder RetroArch never scans and still logs
+# [RSM->WEBDAV] success. Do not let an assumed row stand unmarked.
 SLUG_TO_CORE = {
-    "snes": "Snes9x",
-    "n64": "Mupen64Plus-Next",
-    "gameboy": "Gambatte",
-    "nes": "FCEUmm",
-    "gba": "mGBA",
-    "psx": "Beetle PSX HW",
-    "genesis": "Genesis Plus GX",
+    "snes": "Snes9x",                   # observed: /webdav/saves/Snes9x
+    "gameboy": "Gambatte",              # observed: /webdav/saves/Gambatte
+    "nes": "FCEUmm",                    # name verified (libretro corename); iPhone core choice unverified
+    "gba": "mGBA",                      # name verified (libretro corename); iPhone core choice unverified
+    "psx": "Beetle PSX HW",             # name verified (libretro corename); iPhone core choice unverified
+    "n64": "Mupen64Plus-Next",          # name verified (libretro corename); iPhone core choice unverified
+    "genesis": "Genesis Plus GX",       # name verified (libretro corename); iPhone core choice unverified
 }
 
 
@@ -198,7 +237,14 @@ def rsm_to_webdav(rsm_file: Path) -> None:
         # to the old display-name map so behaviour degrades rather than breaks.
         core = next((k for k, v in CORE_MAP.items() if v == system), None)
     if not core:
-        print(f"[SKIP] Unknown system: {system} (slug={slug})")
+        if slug:
+            # A real slug with no core mapping: a decision nobody has made yet,
+            # not noise. Distinct marker and its own count so it cannot hide
+            # inside the unknown-system total.
+            print(f"[UNMAPPED] slug={slug!r} system={system!r} "
+                  f"-- add it to SLUG_TO_CORE before trusting this platform")
+        else:
+            print(f"[SKIP] Unknown system: {system} (no metadata.json record)")
         return
 
     webdav_dir = WEBDAV_SAVES / core
@@ -242,7 +288,15 @@ def newest_payload_per_game_and_ext():
             parts = payload.relative_to(RSM_SAVES).parts
             if len(parts) < 4:
                 continue
-            key = (parts[0], parts[1], payload.suffix)
+            slug = read_system_slug(payload)
+            core = SLUG_TO_CORE.get(slug) if slug else None
+            if not core:
+                core = next((k for k, v in CORE_MAP.items() if v == parts[0]), None)
+            # Key on the DESTINATION. Two store folders for one game (SNES and
+            # Nintendo Super Nintendo Entertainment System) are two source keys
+            # but one output file; keying on the source let both write it every
+            # pass and one shadowed the other forever, by walk order.
+            key = (core or parts[0], parts[1], payload.suffix)
             stamp = record_timestamp(payload)
         except ValueError:
             continue
@@ -257,12 +311,15 @@ def record_timestamp(payload: Path) -> float:
         import json
         with open(meta) as fh:
             rec = json.load(fh)
-        for field in ("uploadedAt", "lastSeenAt", "createdAt"):
-            value = rec.get(field)
-            if value:
-                from datetime import datetime
-                return datetime.fromisoformat(
-                    value.replace("Z", "+00:00")).timestamp()
+        from datetime import datetime
+        # Real records nest their timestamp under "summary"; reading only the
+        # root silently fell through to directory mtime for most of the store.
+        for holder in (rec, rec.get("summary") or {}):
+            for field in ("uploadedAt", "lastSeenAt", "createdAt"):
+                value = holder.get(field)
+                if value:
+                    return datetime.fromisoformat(
+                        value.replace("Z", "+00:00")).timestamp()
     except Exception:
         pass
     try:
