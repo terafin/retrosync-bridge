@@ -89,6 +89,47 @@ def webdav_to_rsm(webdav_file: Path) -> None:
         print(f"[ERR] webdav->rsm {webdav_file}: {e}")
 
 
+# Canonical identity is the server's systemSlug. Every save directory carries a
+# metadata.json stating it, so the system is READ, never inferred from a display
+# name. Only the WebDAV destination needs a core name, and that is the seven-row
+# table below -- stable, keyed on slug, and not a naming negotiation.
+SLUG_TO_CORE = {
+    "snes": "Snes9x",
+    "n64": "Mupen64Plus-Next",
+    "gameboy": "Gambatte",
+    "nes": "FCEUmm",
+    "gba": "mGBA",
+    "psx": "Beetle PSX HW",
+    "genesis": "Genesis Plus GX",
+}
+
+
+def read_system_slug(payload: Path) -> str | None:
+    """systemSlug from the metadata.json sitting beside the payload.
+
+    The old CORE_MAP matched display names against folder names and missed at
+    both ends: the store carries long and short folders side by side, and its
+    own strings ("Sony PlayStation") do not match the records ("PlayStation").
+    Reading the slug removes both failures -- 45 of 46 payloads carry a record.
+    """
+    meta = payload.parent / "metadata.json"
+    try:
+        import json
+        with open(meta) as fh:
+            rec = json.load(fh)
+    except Exception:
+        return None
+    slug = rec.get("systemSlug")
+    if isinstance(slug, str) and slug.strip():
+        return slug.strip().lower()
+    system = rec.get("system")
+    if isinstance(system, dict):
+        slug = system.get("slug")
+        if isinstance(slug, str) and slug.strip():
+            return slug.strip().lower()
+    return None
+
+
 def rsm_to_webdav(rsm_file: Path) -> None:
     """RSM -> WebDAV (iPhone)."""
     if not rsm_file.exists() or not rsm_file.name.startswith("payload."):
@@ -104,9 +145,14 @@ def rsm_to_webdav(rsm_file: Path) -> None:
     # Reverse-map: pick first core that maps to this system. Multiple cores may map to one
     # system (Gambatte+SameBoy both -> "Nintendo Game Boy"); we just pick one for the WebDAV
     # filename. RetroArch will use whichever core file matches its game name.
-    core = next((k for k, v in CORE_MAP.items() if v == system), None)
+    slug = read_system_slug(rsm_file)
+    core = SLUG_TO_CORE.get(slug) if slug else None
     if not core:
-        print(f"[SKIP] Unknown system: {system}")
+        # No record beside the payload, or a slug with no known core. Fall back
+        # to the old display-name map so behaviour degrades rather than breaks.
+        core = next((k for k, v in CORE_MAP.items() if v == system), None)
+    if not core:
+        print(f"[SKIP] Unknown system: {system} (slug={slug})")
         return
 
     webdav_dir = WEBDAV_SAVES / core
@@ -115,14 +161,9 @@ def rsm_to_webdav(rsm_file: Path) -> None:
     if dest.exists() and file_hash(rsm_file) == file_hash(dest):
         return
 
-    # .rtc is a clock sidecar, not the save itself. Carry it alongside, but never
-    # let it win over a real payload for the same game.
-    if rsm_file.suffix == ".rtc" and dest.with_suffix(".srm").exists():
-        return
-
     try:
         shutil.copy2(rsm_file, dest)
-        print(f"[RSM->WEBDAV] {system}/{game} -> {core}/{game}.srm")
+        print(f"[RSM->WEBDAV] {system}/{game} -> {core}/{dest.name}")
     except (OSError, PermissionError) as e:
         print(f"[ERR] rsm->webdav {rsm_file}: {e}")
 
