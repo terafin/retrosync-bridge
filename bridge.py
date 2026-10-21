@@ -80,25 +80,49 @@ def webdav_to_rsm(webdav_file: Path) -> None:
     # target if it already holds this extension, or holds no payload at all.
     existing = list(rsm_dir.glob("save-*")) if rsm_dir.exists() else []
     want = f"payload{webdav_file.suffix}"
-    # A dir is only a safe target if this extension is absent there, or already
-    # holds exactly these bytes. "Has the extension" is not enough: a dir can hold
-    # payload.srm and payload.sav with different content, and overwriting one with
-    # the other destroys a real component — which the forward direction then
-    # propagates back out.
+    # Two rules, both needed:
+    #
+    # 1. If these exact bytes already exist under this game, there is nothing to
+    #    do. After the forward direction copies a save out, the reverse sees it in
+    #    WebDAV and would otherwise copy it straight back, gaining a duplicate
+    #    under another save's record.
     src_hash = file_hash(webdav_file)
-    compatible = []
-    for d in existing:
-        target = d / want
-        if not target.exists():
-            compatible.append(d)
-        elif file_hash(target) == src_hash:
-            compatible.append(d)
+    for other in rsm_dir.rglob("payload.*") if rsm_dir.exists() else []:
+        if other.is_file() and file_hash(other) == src_hash:
+            return
+    #
+    # 2. A dir is a valid target only if it already holds THIS extension, or
+    #    holds no payload at all. A dir holding a different component is its own
+    #    record — that is what the Crystal case shows: the .rtc directory is not a
+    #    place to put a .srm.
+    compatible = [d for d in existing
+                  if (d / want).exists() or not list(d.glob("payload.*"))]
     if compatible:
         save_dir = max(compatible, key=lambda p: p.stat().st_mtime)
     else:
         save_id = hashlib.md5(f"{system}{game}{time.time()}".encode()).hexdigest()[:12]
         save_dir = rsm_dir / f"save-{save_id}"
         save_dir.mkdir(parents=True, exist_ok=True)
+        # A save dir without a record is an orphan: the forward direction selects
+        # by newest metadata.json uploadedAt and falls back to dir mtime when the
+        # record is absent, so a recordless dir created seconds ago outranks a
+        # real save from last week and masks it. Every dir gets a record, as the
+        # store's own writes do.
+        slug = next((sl for sl, core_name in SLUG_TO_CORE.items()
+                     if core_name == core), None)
+        try:
+            import json
+            from datetime import datetime, timezone
+            with open(save_dir / "metadata.json", "w") as fh:
+                json.dump({
+                    "systemPath": system,
+                    "systemSlug": slug,
+                    "uploadedAt": datetime.now(timezone.utc)
+                                  .strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "source": "retrosync-bridge",
+                }, fh)
+        except OSError as e:
+            print(f"[ERR] could not write metadata for {save_dir}: {e}")
 
     dest = save_dir / want
     if dest.exists() and file_hash(webdav_file) == file_hash(dest):
