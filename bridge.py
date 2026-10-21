@@ -109,7 +109,7 @@ def rsm_to_webdav(rsm_file: Path) -> None:
         print(f"[SKIP] Unknown system: {system}")
         return
 
-    webdav_dir = WEBDAV_SAVES / "saves" / core
+    webdav_dir = WEBDAV_SAVES / core
     webdav_dir.mkdir(parents=True, exist_ok=True)
     dest = webdav_dir / f"{game}.srm"
     if dest.exists() and file_hash(rsm_file) == file_hash(dest):
@@ -130,7 +130,8 @@ def rsm_payloads():
     srm, sav, sra, mpk, rtc, mcr. Globbing payload.sav alone matched 5 of 81
     payloads in the live store, so the RSM -> WebDAV direction saw almost nothing.
     """
-    return RSM_SAVES.rglob("payload.*")
+    return (p for p in RSM_SAVES.rglob("payload.*")
+            if "_rsm" not in p.relative_to(RSM_SAVES).parts[:1])
 
 
 def initial_sync() -> None:
