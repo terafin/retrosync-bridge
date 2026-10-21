@@ -139,11 +139,56 @@ def rsm_payloads():
             if "_rsm" not in p.relative_to(RSM_SAVES).parts[:1])
 
 
+def newest_payload_per_game_and_ext():
+    """One payload per (system, game, extension), chosen by the newest record.
+
+    Several save dirs can exist for one game - a retried upload, or a second
+    device - and keeping the extension alone does not disambiguate two payload.srm.
+    Picking the first one os.walk happens to yield is not a policy, so this uses
+    the same rule the server does: the newest record wins. metadata.json's
+    uploadedAt is preferred; the directory mtime is the fallback for records that
+    predate it.
+    """
+    best = {}
+    for payload in rsm_payloads():
+        try:
+            parts = payload.relative_to(RSM_SAVES).parts
+            if len(parts) < 4:
+                continue
+            key = (parts[0], parts[1], payload.suffix)
+            stamp = record_timestamp(payload)
+        except ValueError:
+            continue
+        if key not in best or stamp > best[key][0]:
+            best[key] = (stamp, payload)
+    return [p for _stamp, p in best.values()]
+
+
+def record_timestamp(payload: Path) -> float:
+    meta = payload.parent / "metadata.json"
+    try:
+        import json
+        with open(meta) as fh:
+            rec = json.load(fh)
+        for field in ("uploadedAt", "lastSeenAt", "createdAt"):
+            value = rec.get(field)
+            if value:
+                from datetime import datetime
+                return datetime.fromisoformat(
+                    value.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        pass
+    try:
+        return payload.parent.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def initial_sync() -> None:
     print("[SYNC] Running sync pass...")
     for srm in WEBDAV_SAVES.rglob("*.srm"):
         webdav_to_rsm(srm)
-    for payload in rsm_payloads():
+    for payload in newest_payload_per_game_and_ext():
         rsm_to_webdav(payload)
     print("[SYNC] Sync pass complete")
 
