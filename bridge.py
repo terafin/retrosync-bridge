@@ -78,7 +78,7 @@ def webdav_to_rsm(webdav_file: Path) -> None:
         save_dir = rsm_dir / f"save-{save_id}"
         save_dir.mkdir(parents=True, exist_ok=True)
 
-    dest = save_dir / "payload.sav"
+    dest = save_dir / f"payload{webdav_file.suffix}"
     if dest.exists() and file_hash(webdav_file) == file_hash(dest):
         return
 
@@ -111,8 +111,13 @@ def rsm_to_webdav(rsm_file: Path) -> None:
 
     webdav_dir = WEBDAV_SAVES / core
     webdav_dir.mkdir(parents=True, exist_ok=True)
-    dest = webdav_dir / f"{game}.srm"
+    dest = webdav_dir / f"{game}{rsm_file.suffix}"
     if dest.exists() and file_hash(rsm_file) == file_hash(dest):
+        return
+
+    # .rtc is a clock sidecar, not the save itself. Carry it alongside, but never
+    # let it win over a real payload for the same game.
+    if rsm_file.suffix == ".rtc" and dest.with_suffix(".srm").exists():
         return
 
     try:
