@@ -10,12 +10,10 @@ RSM layout (SGM-Helper from MiSTer/Steam Deck/LaunchBox/Pocket):
 Both trees are watched; on write, MD5 compare + copy across.
 """
 import hashlib
+import os
 import shutil
 import time
 from pathlib import Path
-
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
 
 WEBDAV_SAVES = Path("/webdav")
 RSM_SAVES = Path("/rsm")
@@ -124,57 +122,46 @@ def rsm_to_webdav(rsm_file: Path) -> None:
         print(f"[ERR] rsm->webdav {rsm_file}: {e}")
 
 
-class WebDAVHandler(FileSystemEventHandler):
-    def on_modified(self, event):
-        if event.is_directory:
-            return
-        path = Path(event.src_path)
-        if path.suffix.lower() in (".srm", ".sav"):
-            time.sleep(0.5)  # debounce
-            webdav_to_rsm(path)
 
-    def on_created(self, event):
-        self.on_modified(event)
+def rsm_payloads():
+    """Every RSM payload, whatever the host extension.
 
-
-class RSMHandler(FileSystemEventHandler):
-    def on_modified(self, event):
-        if event.is_directory:
-            return
-        path = Path(event.src_path)
-        if path.name == "payload.sav":
-            time.sleep(0.5)
-            rsm_to_webdav(path)
-
-    def on_created(self, event):
-        self.on_modified(event)
+    The store writes payload.<ext> where ext varies by source device and system:
+    srm, sav, sra, mpk, rtc, mcr. Globbing payload.sav alone matched 5 of 81
+    payloads in the live store, so the RSM -> WebDAV direction saw almost nothing.
+    """
+    return RSM_SAVES.rglob("payload.*")
 
 
 def initial_sync() -> None:
-    print("[INIT] Running initial sync...")
+    print("[SYNC] Running sync pass...")
     for srm in WEBDAV_SAVES.rglob("*.srm"):
         webdav_to_rsm(srm)
-    for sav in RSM_SAVES.rglob("payload.sav"):
-        rsm_to_webdav(sav)
-    print("[INIT] Initial sync complete")
+    for payload in rsm_payloads():
+        rsm_to_webdav(payload)
+    print("[SYNC] Sync pass complete")
 
 
 def main() -> None:
-    print(f"retrosync-bridge starting...\n  WebDAV: {WEBDAV_SAVES}\n  RSM:    {RSM_SAVES}")
-    initial_sync()
+    interval = int(os.environ.get("POLL_INTERVAL_SECS", "60"))
+    print(f"retrosync-bridge starting...\n  WebDAV: {WEBDAV_SAVES}\n  RSM:    {RSM_SAVES}\n  poll:   {interval}s")
 
-    observer = Observer()
-    observer.schedule(WebDAVHandler(), str(WEBDAV_SAVES), recursive=True)
-    observer.schedule(RSMHandler(), str(RSM_SAVES), recursive=True)
-    observer.start()
-
-    print("[RUNNING] Watching for changes...")
+    # Polling, not inotify. Both trees are NFS mounts written by other containers
+    # on other hosts, and inotify delivers no events for those writes -- the
+    # observer would start cleanly, log "watching", and never fire again. The
+    # trees are small (tens of files), the per-file work is an MD5 compare that
+    # already skips unchanged content, so a periodic full pass is cheap and does
+    # not care who wrote the file.
+    print("[RUNNING] Polling for changes...")
     try:
         while True:
-            time.sleep(1)
+            try:
+                initial_sync()
+            except Exception as exc:  # keep the loop alive across transient NFS errors
+                print(f"[ERR] sync pass failed: {exc}")
+            time.sleep(interval)
     except KeyboardInterrupt:
-        observer.stop()
-    observer.join()
+        print("[STOP] interrupted")
 
 
 if __name__ == "__main__":
