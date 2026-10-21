@@ -68,17 +68,39 @@ def webdav_to_rsm(webdav_file: Path) -> None:
     game = webdav_file.stem
     rsm_dir = RSM_SAVES / system / game
 
-    # Pick the most recently MODIFIED save dir if any, else create one.
-    # (Earlier versions sorted alphabetically — wrong, since save IDs are random hex.)
+    # Choose a save dir that holds THIS extension, newest first.
+    #
+    # The previous rule took the newest-mtime dir regardless of what it held, so a
+    # WebDAV .srm was written into a directory whose payload was .sav — with
+    # different content — overwriting it. One pass destroyed the distinct
+    # component and the forward direction then propagated the damage.
+    #
+    # A store directory is a save *component*: payload.srm and payload.sav in one
+    # dir are different files with different bytes. So a dir is only a valid
+    # target if it already holds this extension, or holds no payload at all.
     existing = list(rsm_dir.glob("save-*")) if rsm_dir.exists() else []
-    if existing:
-        save_dir = max(existing, key=lambda p: p.stat().st_mtime)
+    want = f"payload{webdav_file.suffix}"
+    # A dir is only a safe target if this extension is absent there, or already
+    # holds exactly these bytes. "Has the extension" is not enough: a dir can hold
+    # payload.srm and payload.sav with different content, and overwriting one with
+    # the other destroys a real component — which the forward direction then
+    # propagates back out.
+    src_hash = file_hash(webdav_file)
+    compatible = []
+    for d in existing:
+        target = d / want
+        if not target.exists():
+            compatible.append(d)
+        elif file_hash(target) == src_hash:
+            compatible.append(d)
+    if compatible:
+        save_dir = max(compatible, key=lambda p: p.stat().st_mtime)
     else:
         save_id = hashlib.md5(f"{system}{game}{time.time()}".encode()).hexdigest()[:12]
         save_dir = rsm_dir / f"save-{save_id}"
         save_dir.mkdir(parents=True, exist_ok=True)
 
-    dest = save_dir / f"payload{webdav_file.suffix}"
+    dest = save_dir / want
     if dest.exists() and file_hash(webdav_file) == file_hash(dest):
         return
 
