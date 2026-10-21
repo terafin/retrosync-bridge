@@ -55,6 +55,17 @@ def file_hash(path: Path) -> str:
         return hashlib.md5(f.read()).hexdigest()
 
 
+def has_payload_with_hash(game_dir: Path, want: str) -> bool:
+    """True when any payload under this game's record has these exact bytes."""
+    for payload in game_dir.rglob("payload.*"):
+        try:
+            if payload.is_file() and file_hash(payload) == want:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def webdav_to_rsm(webdav_file: Path) -> None:
     """WebDAV (iPhone) -> RSM."""
     if not webdav_file.exists():
@@ -68,19 +79,38 @@ def webdav_to_rsm(webdav_file: Path) -> None:
     game = webdav_file.stem
     rsm_dir = RSM_SAVES / system / game
 
+    src_hash = file_hash(webdav_file)
+
     # Prefer the folder the game's own record already lives in, so the reverse
     # adds to where the game is rather than to a display-name variant. Correcting
     # CORE_MAP's strings is a patch, not a fix: the store carries both names for
     # some systems, and only the record can say which one this game uses.
+    #
+    # The slug rule alone could not rescue the case it most needed. RetroArch
+    # keeps one save in every core folder that can open the game, so an iPhone
+    # with Snes9x and Gambatte holds F-Zero.srm in both. Arriving from Gambatte,
+    # the slug rule looks for a record whose slug is "gameboy", finds only the
+    # SNES one, and creates a second, mis-typed record beside it. So when the
+    # folder-derived path would be a NEW record, identical bytes already filed
+    # under any system win: same save, and the store already has the right
+    # system on it. Content is the discriminator, not the name -- two genuinely
+    # different F-Zero saves are still allowed to be two records.
     if not rsm_dir.exists():
+        want_slug = next((sl for sl, c in SLUG_TO_CORE.items() if c == core), None)
+        same_content = None
         for cand in RSM_SAVES.iterdir() if RSM_SAVES.exists() else []:
             game_dir = cand / game
-            if cand.is_dir() and game_dir.exists():
-                sample = next(game_dir.rglob("payload.*"), None)
-                want_slug = next((sl for sl, c in SLUG_TO_CORE.items() if c == core), None)
-                if sample and want_slug and read_system_slug(sample) == want_slug:
-                    rsm_dir = game_dir
-                    break
+            if not (cand.is_dir() and game_dir.exists()):
+                continue
+            sample = next(game_dir.rglob("payload.*"), None)
+            if sample and want_slug and read_system_slug(sample) == want_slug:
+                rsm_dir = game_dir
+                break
+            if same_content is None and has_payload_with_hash(game_dir, src_hash):
+                same_content = game_dir
+        else:
+            if same_content is not None:
+                rsm_dir = same_content
 
     # Choose a save dir that holds THIS extension, newest first.
     #
@@ -100,7 +130,6 @@ def webdav_to_rsm(webdav_file: Path) -> None:
     #    do. After the forward direction copies a save out, the reverse sees it in
     #    WebDAV and would otherwise copy it straight back, gaining a duplicate
     #    under another save's record.
-    src_hash = file_hash(webdav_file)
     store_payloads = [p for p in (rsm_dir.rglob("payload.*") if rsm_dir.exists() else [])
                       if p.is_file()]
     for other in store_payloads:
@@ -161,7 +190,7 @@ def webdav_to_rsm(webdav_file: Path) -> None:
 
     try:
         shutil.copy2(webdav_file, dest)
-        print(f"[WEBDAV->RSM] {webdav_file.name} -> {system}/{game}")
+        print(f"[WEBDAV->RSM] {webdav_file.name} -> {rsm_dir.parent.name}/{game}")
     except (OSError, PermissionError) as e:
         print(f"[ERR] webdav->rsm {webdav_file}: {e}")
 
