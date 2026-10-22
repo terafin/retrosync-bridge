@@ -1,5 +1,6 @@
 #!/bin/bash
 set -u
+[ $# -ge 1 ] || { echo "usage: $0 <path to bridge.py>"; exit 2; }
 B="$1"; FAIL=0
 SYS="Nintendo Super Nintendo Entertainment System"
 run() { cd /tmp && WEBDAV_SAVES=/tmp/bt/webdav RSM_SAVES=/tmp/bt/rsm POLL_INTERVAL_SECS=1 timeout 4 python3 -u "$B" >/dev/null 2>&1; }
