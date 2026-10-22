@@ -20,5 +20,17 @@ mk "/tmp/um/rsm/Sega Dreamcast/Sonic/save-1-a" VMS vms dreamcast 2026-01-01T00:0
 run
 chk "warning for dreamcast" "$(grep -c "UNMAPPED.*dreamcast" /tmp/um/log)" "1"
 
+echo "=== M3 master-system, game-gear and psp are mapped ==="
+for spec in "Sega Master System/Phantasy Star:srm:master-system:Genesis Plus GX" \
+            "Sega Game Gear/Shining Force:srm:game-gear:Genesis Plus GX" \
+            "Sony PlayStation Portable/Dissidia:bin:psp:PPSSPP"; do
+  IFS=: read -r dir ext slug core <<<"$spec"
+  rm -rf /tmp/um; mkdir -p /tmp/um/webdav
+  mk "/tmp/um/rsm/$dir/save-1-a" DATA "$ext" "$slug" 2026-01-01T00:00:00Z
+  run
+  chk "no [UNMAPPED] for $slug" "$(grep -c 'UNMAPPED' /tmp/um/log)" "0"
+  chk "$slug lands under $core" "$(find "/tmp/um/webdav/$core" -type f 2>/dev/null | wc -l | tr -d ' ')" "1"
+done
+
 echo; [ "$FAIL" = "0" ] && echo "ALL PASS" || echo "FAILURES PRESENT"
 exit "$FAIL"

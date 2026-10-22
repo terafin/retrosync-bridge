@@ -262,6 +262,12 @@ SLUG_TO_CORE = {
     "psx": "Beetle PSX HW",             # name verified (libretro corename); iPhone core choice unverified
     "n64": "Mupen64Plus-Next",          # name verified (libretro corename); iPhone core choice unverified
     "genesis": "Genesis Plus GX",       # name verified (libretro corename); iPhone core choice unverified
+    # Genesis Plus GX also runs Master System and Game Gear, so the three share a
+    # folder. Genesis stays first: a WebDAV save the store has never seen falls back
+    # to the first slug for its core, and the store record decides it for the rest.
+    "master-system": "Genesis Plus GX",
+    "game-gear": "Genesis Plus GX",
+    "psp": "PPSSPP",                    # name verified (libretro corename); iPhone core choice unverified
 }
 
 
