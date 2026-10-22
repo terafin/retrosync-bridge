@@ -247,6 +247,13 @@ def lookup_rom_sha1(game: str) -> str | None:
 # the iPhone's RetroArch uses it. An assumed row that is wrong does not fail --
 # it writes a save into a folder RetroArch never scans and still logs
 # [RSM->WEBDAV] success. Do not let an assumed row stand unmarked.
+# Systems the iPhone has no WebDAV core for. Arcade saves are per-machine MAME
+# nvram, which RetroArch on iOS neither writes nor reads, so there is nothing
+# to map them to. Listing them here keeps the per-pass walk quiet instead of
+# printing [UNMAPPED] for every arcade record forever -- the warning still
+# fires for a slug nobody has decided about, which is what it is for.
+NO_WEBDAV_SYSTEMS = {"arcade"}
+
 SLUG_TO_CORE = {
     "snes": "Snes9x",                   # observed: /webdav/saves/Snes9x
     "gameboy": "Gambatte",              # observed: /webdav/saves/Gambatte
@@ -300,6 +307,8 @@ def rsm_to_webdav(rsm_file: Path) -> None:
     # system (Gambatte+SameBoy both -> "Nintendo Game Boy"); we just pick one for the WebDAV
     # filename. RetroArch will use whichever core file matches its game name.
     slug = read_system_slug(rsm_file)
+    if slug in NO_WEBDAV_SYSTEMS:
+        return
     core = SLUG_TO_CORE.get(slug) if slug else None
     if not core:
         # No record beside the payload, or a slug with no known core. Fall back
