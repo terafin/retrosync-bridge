@@ -10,13 +10,19 @@ RSM layout (SGM-Helper from MiSTer/Steam Deck/LaunchBox/Pocket):
 Both trees are watched; on write, MD5 compare + copy across.
 """
 import hashlib
+import json
 import os
 import shutil
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
 from pathlib import Path
 
 WEBDAV_SAVES = Path(os.environ.get("WEBDAV_SAVES", "/webdav"))
 RSM_SAVES = Path(os.environ.get("RSM_SAVES", "/rsm"))
+RSM_URL = os.environ.get("RSM_URL", "").strip().rstrip("/")
 
 # RetroArch core name -> RSM system name
 CORE_MAP = {
@@ -112,24 +118,9 @@ def webdav_to_rsm(webdav_file: Path) -> None:
             if same_content is not None:
                 rsm_dir = same_content
 
-    # Choose a save dir that holds THIS extension, newest first.
-    #
-    # The previous rule took the newest-mtime dir regardless of what it held, so a
-    # WebDAV .srm was written into a directory whose payload was .sav — with
-    # different content — overwriting it. One pass destroyed the distinct
-    # component and the forward direction then propagated the damage.
-    #
-    # A store directory is a save *component*: payload.srm and payload.sav in one
-    # dir are different files with different bytes. So a dir is only a valid
-    # target if it already holds this extension, or holds no payload at all.
-    existing = list(rsm_dir.glob("save-*")) if rsm_dir.exists() else []
-    want = f"payload{webdav_file.suffix}"
-    # Two rules, both needed:
-    #
-    # 1. If these exact bytes already exist under this game, there is nothing to
-    #    do. After the forward direction copies a save out, the reverse sees it in
-    #    WebDAV and would otherwise copy it straight back, gaining a duplicate
-    #    under another save's record.
+    # Nothing to do when these exact bytes are already filed under this game.
+    # After the forward direction copies a save out, the reverse sees it in
+    # WebDAV and would otherwise upload it again as a second record.
     store_payloads = [p for p in (rsm_dir.rglob("payload.*") if rsm_dir.exists() else [])
                       if p.is_file()]
     for other in store_payloads:
@@ -138,61 +129,110 @@ def webdav_to_rsm(webdav_file: Path) -> None:
 
     # Is this actually an iPhone edit, or an echo of what we copied out?
     #
-    # shutil.copy2 preserves mtime, so a file the forward direction wrote carries
-    # the STORE payload's timestamp. A genuine edit on the device sets mtime to
-    # now. So the reverse writes only when the WebDAV copy is strictly newer than
-    # everything the store already holds for this game — otherwise a stale WebDAV
-    # file silently overwrites a newer store save on every pass, which is exactly
-    # what made the real-change probe fail.
+    # shutil.copy2 preserves mtime, so a file the forward direction wrote
+    # carries the STORE payload's timestamp. A genuine edit on the device sets
+    # mtime to now. Only a strictly newer WebDAV copy is uploaded; otherwise a
+    # stale WebDAV file would overwrite a newer store save on every pass.
     try:
         src_mtime = webdav_file.stat().st_mtime
         if store_payloads and src_mtime <= max(p.stat().st_mtime for p in store_payloads):
             return
     except OSError:
         pass
-    #
-    # 2. A dir is a valid target only if it already holds THIS extension, or
-    #    holds no payload at all. A dir holding a different component is its own
-    #    record — that is what the Crystal case shows: the .rtc directory is not a
-    #    place to put a .srm.
-    compatible = [d for d in existing
-                  if (d / want).exists() or not list(d.glob("payload.*"))]
-    if compatible:
-        save_dir = max(compatible, key=lambda p: p.stat().st_mtime)
-    else:
-        save_id = hashlib.md5(f"{system}{game}{time.time()}".encode()).hexdigest()[:12]
-        save_dir = rsm_dir / f"save-{save_id}"
-        save_dir.mkdir(parents=True, exist_ok=True)
-        # A save dir without a record is an orphan: the forward direction selects
-        # by newest metadata.json uploadedAt and falls back to dir mtime when the
-        # record is absent, so a recordless dir created seconds ago outranks a
-        # real save from last week and masks it. Every dir gets a record, as the
-        # store's own writes do.
-        slug = next((sl for sl, core_name in SLUG_TO_CORE.items()
-                     if core_name == core), None)
-        try:
-            import json
-            from datetime import datetime, timezone
-            with open(save_dir / "metadata.json", "w") as fh:
-                json.dump({
-                    "systemPath": system,
-                    "systemSlug": slug,
-                    "uploadedAt": datetime.now(timezone.utc)
-                                  .strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "source": "retrosync-bridge",
-                }, fh)
-        except OSError as e:
-            print(f"[ERR] could not write metadata for {save_dir}: {e}")
 
-    dest = save_dir / want
-    if dest.exists() and file_hash(webdav_file) == file_hash(dest):
+    # The system is READ from the record this game already has, matching the
+    # folder choice above; the core name is only a fallback for a game the
+    # store has never seen.
+    present = next(rsm_dir.rglob("payload.*"), None) if rsm_dir.exists() else None
+    slug = read_system_slug(present) if present else None
+    if not slug:
+        slug = next((sl for sl, core_name in SLUG_TO_CORE.items() if core_name == core), None)
+    if slug is None:
+        print(f"[UNMAPPED] core={core!r} system={system!r} -- add it to SLUG_TO_CORE")
         return
 
+    upload_webdav_save(webdav_file, slug, game)
+
+
+def upload_webdav_save(webdav_file: Path, system_slug: str, game: str) -> None:
+    """File a WebDAV save through the server's own write path.
+
+    The reverse direction used to write payload.<ext> and a hand-made
+    metadata.json straight into the store. That record is not a record the
+    server can read: the loader decodes the store's full record shape and a
+    three-field stub leaves it with no id and no payload file, so the save
+    stayed on disk and appeared in no listing. Rebuilding that shape here
+    would be a second implementation of the server's schema, and it would have
+    to be kept in step forever.
+
+    A multipart POST to /saves goes through the same path a device does: the
+    server validates the payload, names the record, and indexes it. The
+    synthetic rom key is the same device-less identity the server already
+    accepts for PlayStation and Wii saves -- a stable key per game, not a
+    claim to know the ROM's hash.
+    """
+    if not RSM_URL:
+        print("[ERR] RSM_URL is not set; cannot file "
+              f"{webdav_file.name} (set it to the server's base URL)")
+        return
+
+    rom_sha1 = lookup_rom_sha1(game) or f"bridge:{system_slug}:{game.strip().lower()}"
+    boundary = "----retrosync" + uuid.uuid4().hex
+    parts = []
+
+    def field(name: str, value: str) -> None:
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n".encode()
+        )
+
+    parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+        f'filename="{webdav_file.name}"\r\nContent-Type: application/octet-stream\r\n\r\n'
+        .encode()
+    )
+    parts.append(webdav_file.read_bytes())
+    parts.append(b"\r\n")
+    field("slotName", "default")
+    field("system", system_slug)
+    field("rom_sha1", rom_sha1)
+    parts.append(f"--{boundary}--\r\n".encode())
+
+    request = urllib.request.Request(
+        f"{RSM_URL}/saves",
+        data=b"".join(parts),
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "X-CSRF-Protection": "1",
+        },
+        method="POST",
+    )
     try:
-        shutil.copy2(webdav_file, dest)
-        print(f"[WEBDAV->RSM] {webdav_file.name} -> {rsm_dir.parent.name}/{game}")
-    except (OSError, PermissionError) as e:
-        print(f"[ERR] webdav->rsm {webdav_file}: {e}")
+        with urllib.request.urlopen(request, timeout=30) as response:
+            print(f"[WEBDAV->RSM] {webdav_file.name} -> {system_slug}/{game} "
+                  f"({response.status})")
+    except urllib.error.HTTPError as exc:
+        print(f"[ERR] webdav->rsm {webdav_file}: {exc.code} "
+              f"{exc.read().decode(errors='replace').strip()}")
+    except OSError as exc:
+        print(f"[ERR] webdav->rsm {webdav_file}: {exc}")
+
+
+def lookup_rom_sha1(game: str) -> str | None:
+    """The server's rom hash for this game, when it knows one."""
+    if not RSM_URL:
+        return None
+    query = urllib.parse.urlencode({"filenameStem": game})
+    try:
+        with urllib.request.urlopen(f"{RSM_URL}/rom/lookup?{query}", timeout=10) as response:
+            body = json.load(response)
+    except (OSError, ValueError):
+        return None
+    rom = body.get("rom") if isinstance(body, dict) else None
+    sha1 = rom.get("sha1") if isinstance(rom, dict) else None
+    if isinstance(sha1, str) and sha1.strip():
+        return sha1.strip()
+    return None
 
 
 # Canonical identity is the server's systemSlug. Every save directory carries a
