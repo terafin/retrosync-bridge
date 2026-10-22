@@ -1,5 +1,6 @@
 #!/bin/bash
 set -u
+[ $# -ge 1 ] || { echo "usage: $0 <path to bridge.py>"; exit 2; }
 B="$1"; FAIL=0
 run() { cd /tmp && WEBDAV_SAVES=/tmp/bt/webdav RSM_SAVES=/tmp/bt/rsm POLL_INTERVAL_SECS=1 timeout 4 python3 -u "$B" >/tmp/bt/run.log 2>&1; }
 mk() { mkdir -p "$1"; printf '%s' "$2" > "$1/payload.$3"; printf '{"systemSlug":"%s","uploadedAt":"%s"}' "$4" "$5" > "$1/metadata.json"; }

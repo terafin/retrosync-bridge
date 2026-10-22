@@ -3,6 +3,7 @@
 # a save whose bytes the store already holds is not filed again. Content is the
 # discriminator; the core folder is only a hint at the system.
 set -u
+[ $# -ge 1 ] || { echo "usage: $0 <path to bridge.py>"; exit 2; }
 B="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; FAIL=0
 SNES="Nintendo Super Nintendo Entertainment System"
 STUB=/tmp/ct/stub

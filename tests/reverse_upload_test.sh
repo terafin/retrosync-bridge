@@ -2,6 +2,7 @@
 # The iPhone path: a WebDAV write must reach the server through /saves, not by
 # writing a record into the store that the server cannot read.
 set -u
+[ $# -ge 1 ] || { echo "usage: $0 <path to bridge.py>"; exit 2; }
 B="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; FAIL=0
 chk() { if [ "$2" = "$3" ]; then echo "  PASS  $1"; else echo "  FAIL  $1 (got '$2' want '$3')"; FAIL=1; fi; }
 
