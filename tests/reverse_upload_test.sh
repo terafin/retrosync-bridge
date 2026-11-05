@@ -28,7 +28,9 @@ PY
 python3 -u "$STUB/server.py" & SRV=$!
 sleep 1
 
-printf 'BINARYPAYLOAD-BRIDGE-TEST' > /tmp/bt/webdav/mGBA/ZZ-iPhone-Path-Test.srm
+# mGBA runs Game Boy and GBA, so only a size no Game Boy cartridge has (64 KiB
+# flash) lets the bridge file a save it has no record of as gba.
+{ printf 'BINARYPAYLOAD-BRIDGE-TEST'; head -c $((65536 - 25)) /dev/zero; } > /tmp/bt/webdav/mGBA/ZZ-iPhone-Path-Test.srm
 touch -d '+1 minute' /tmp/bt/webdav/mGBA/ZZ-iPhone-Path-Test.srm
 
 cd /tmp && WEBDAV_SAVES=/tmp/bt/webdav RSM_SAVES=/tmp/bt/rsm RSM_URL=http://127.0.0.1:18777 \
@@ -53,7 +55,7 @@ echo "=== U3 no RSM_URL: one error line per file, and no request ==="
 # The stub from U1 is still listening, so "no request" is observable: had the
 # bridge reached anything, this log would show it.
 rm -rf /tmp/bt/unset; mkdir -p /tmp/bt/unset/webdav/mGBA
-printf 'BINARYPAYLOAD-NOURL' > /tmp/bt/unset/webdav/mGBA/ZZ-No-Url.srm
+{ printf 'BINARYPAYLOAD-NOURL'; head -c $((65536 - 19)) /dev/zero; } > /tmp/bt/unset/webdav/mGBA/ZZ-No-Url.srm
 : > /tmp/bt/stub/requests.log
 cd /tmp && WEBDAV_SAVES=/tmp/bt/unset/webdav RSM_SAVES=/tmp/bt/unset/rsm \
   POLL_INTERVAL_SECS=60 timeout 2 python3 -u "$B" >/tmp/bt/unset.bridge.log 2>&1
