@@ -72,84 +72,115 @@ def has_payload_with_hash(game_dir: Path, want: str) -> bool:
     return False
 
 
+# Cores that run more than one system. Their WebDAV folder does not say which
+# system a save belongs to, so the folder alone never decides it: an NES Tecmo
+# Super Bowl copy in Genesis Plus GX was filed as genesis that way, and so would
+# every Game Gear and Master System save the iPhone writes there.
+SHARED_CORES = {
+    "Genesis Plus GX": ("genesis", "master-system", "game-gear"),
+    "PicoDrive": ("genesis", "sega-32x", "master-system"),
+    "mGBA": ("gba", "gameboy"),
+}
+
+
+# Only sizes no Game Boy cartridge produces: the 32 KiB and EEPROM sizes are
+# shared, so they leave it ambiguous. The Sega systems Genesis Plus GX runs
+# share their save sizes, so size never decides there.
+GBA_ONLY_SIZES = {65536, 131072}
+
+
+def system_by_size(core: str, path: Path):
+    if core != "mGBA":
+        return None
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    return "gba" if size in GBA_ONLY_SIZES else None
+
+
+def core_systems(core: str) -> tuple:
+    if core in SHARED_CORES:
+        return SHARED_CORES[core]
+    slug = next((sl for sl, c in SLUG_TO_CORE.items() if c == core), None)
+    return (slug,) if slug else ()
+
+
+def records_for(game: str) -> list:
+    """(systemSlug, payload) for every stored payload of this game, any system.
+
+    Only payloads count: a game folder the server emptied when it deleted a
+    record is not a record, and treating it as one filed saves into it.
+    """
+    out = []
+    if not RSM_SAVES.exists():
+        return out
+    for cand in RSM_SAVES.iterdir():
+        game_dir = cand / game
+        if cand.name.startswith("_") or not (cand.is_dir() and game_dir.is_dir()):
+            continue
+        for payload in game_dir.rglob("payload.*"):
+            if payload.is_file():
+                out.append((read_system_slug(payload), payload))
+    return out
+
+
 def webdav_to_rsm(webdav_file: Path) -> None:
     """WebDAV (iPhone) -> RSM."""
     if not webdav_file.exists():
         return
     core = webdav_file.parent.name
-    system = CORE_MAP.get(core)
-    if not system:
-        print(f"[SKIP] Unknown core: {core}")
+    systems = core_systems(core)
+    if not systems:
+        if core in CORE_MAP:
+            print(f"[UNMAPPED] core={core!r} system={CORE_MAP[core]!r} -- add it to SLUG_TO_CORE")
+        else:
+            print(f"[SKIP] Unknown core: {core}")
         return
 
     game = webdav_file.stem
-    rsm_dir = RSM_SAVES / system / game
-
     src_hash = file_hash(webdav_file)
+    records = records_for(game)
 
-    # Prefer the folder the game's own record already lives in, so the reverse
-    # adds to where the game is rather than to a display-name variant. Correcting
-    # CORE_MAP's strings is a patch, not a fix: the store carries both names for
-    # some systems, and only the record can say which one this game uses.
-    #
-    # The slug rule alone could not rescue the case it most needed. RetroArch
-    # keeps one save in every core folder that can open the game, so an iPhone
-    # with Snes9x and Gambatte holds F-Zero.srm in both. Arriving from Gambatte,
-    # the slug rule looks for a record whose slug is "gameboy", finds only the
-    # SNES one, and creates a second, mis-typed record beside it. So when the
-    # folder-derived path would be a NEW record, identical bytes already filed
-    # under any system win: same save, and the store already has the right
-    # system on it. Content is the discriminator, not the name -- two genuinely
-    # different F-Zero saves are still allowed to be two records.
-    if not rsm_dir.exists():
-        want_slug = next((sl for sl, c in SLUG_TO_CORE.items() if c == core), None)
-        same_content = None
-        for cand in RSM_SAVES.iterdir() if RSM_SAVES.exists() else []:
-            game_dir = cand / game
-            if not (cand.is_dir() and game_dir.exists()):
-                continue
-            sample = next(game_dir.rglob("payload.*"), None)
-            if sample and want_slug and read_system_slug(sample) == want_slug:
-                rsm_dir = game_dir
-                break
-            if same_content is None and has_payload_with_hash(game_dir, src_hash):
-                same_content = game_dir
-        else:
-            if same_content is not None:
-                rsm_dir = same_content
+    # These exact bytes are already filed for this game, under whatever system
+    # the record names: same save, nothing to upload. This also stops the echo
+    # of a file the forward direction copied out.
+    if any(file_hash(p) == src_hash for _slug, p in records):
+        return
 
-    # Nothing to do when these exact bytes are already filed under this game.
-    # After the forward direction copies a save out, the reverse sees it in
-    # WebDAV and would otherwise upload it again as a second record.
-    store_payloads = [p for p in (rsm_dir.rglob("payload.*") if rsm_dir.exists() else [])
-                      if p.is_file()]
-    for other in store_payloads:
-        if file_hash(other) == src_hash:
+    # The system comes from the save path when the folder names exactly one,
+    # then from the game's own records, and otherwise the save is skipped. A
+    # shared core's folder names none, so only a record of this game under one
+    # of the core's systems can say which; none, or several, is ambiguous, and
+    # a guess would file one system's save as another's.
+    if len(systems) == 1:
+        slug = systems[0]
+    else:
+        own = {s for s, _p in records if s in systems}
+        if not own and not records:
+            sized = system_by_size(core, webdav_file)
+            if sized:
+                own = {sized}
+        if len(own) != 1:
+            why = ("its records are under " + ", ".join(sorted({s or "?" for s, _p in records})))\
+                if records and not own else ("it has records under " + ", ".join(sorted(own)))\
+                if own else "no record of it says which"
+            print(f"[AMBIGUOUS] {core}/{webdav_file.name}: {core} runs "
+                  f"{', '.join(systems)} and {why}; not uploaded")
             return
+        slug = own.pop()
 
-    # Is this actually an iPhone edit, or an echo of what we copied out?
-    #
-    # shutil.copy2 preserves mtime, so a file the forward direction wrote
-    # carries the STORE payload's timestamp. A genuine edit on the device sets
-    # mtime to now. Only a strictly newer WebDAV copy is uploaded; otherwise a
-    # stale WebDAV file would overwrite a newer store save on every pass.
+    # Only a strictly newer WebDAV copy is an iPhone edit. shutil.copy2 keeps
+    # the store payload's mtime on a file the forward direction wrote, so an
+    # older or equal copy is that echo, or a stale file that must not overwrite
+    # a newer save.
+    same_system = [p for s, p in records if s == slug]
     try:
         src_mtime = webdav_file.stat().st_mtime
-        if store_payloads and src_mtime <= max(p.stat().st_mtime for p in store_payloads):
+        if same_system and src_mtime <= max(p.stat().st_mtime for p in same_system):
             return
     except OSError:
         pass
-
-    # The system is READ from the record this game already has, matching the
-    # folder choice above; the core name is only a fallback for a game the
-    # store has never seen.
-    present = next(rsm_dir.rglob("payload.*"), None) if rsm_dir.exists() else None
-    slug = read_system_slug(present) if present else None
-    if not slug:
-        slug = next((sl for sl, core_name in SLUG_TO_CORE.items() if core_name == core), None)
-    if slug is None:
-        print(f"[UNMAPPED] core={core!r} system={system!r} -- add it to SLUG_TO_CORE")
-        return
 
     upload_webdav_save(webdav_file, slug, game)
 
