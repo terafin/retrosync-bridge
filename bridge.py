@@ -518,6 +518,12 @@ def dry_run() -> int:
         print(f"[DRY-RUN] found nothing to read under {WEBDAV_SAVES} or {RSM_SAVES}; "
               "check the mounts before trusting this result")
         return 3
+    if read_rsm == 0 and read_web > 0:
+        # A recreate that dropped the /rsm subpath looked exactly like this: the
+        # store read nothing, so every WebDAV save became an upload. An empty
+        # store is real on a fresh install, so this warns rather than fails.
+        print(f"[DRY-RUN] WARNING: the store read no payloads while WebDAV read {read_web} "
+              f"save(s); check the /rsm mount before trusting this result")
     uploads = [p for p in PLANNED if p.startswith("would upload")]
     writes = [p for p in PLANNED if p.startswith("would write")]
     print(f"[DRY-RUN] summary: {len(uploads)} upload(s) to RSM, {len(writes)} write(s) to WebDAV")

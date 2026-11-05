@@ -43,6 +43,7 @@ fixture() {
 run() { : > "$STUB/requests.log"; (cd "$T" && WEBDAV_SAVES="$T/web" RSM_SAVES="$T/rsm" RSM_URL=http://127.0.0.1:$PORT POLL_INTERVAL_SECS=1 "$@" timeout 5 python3 -u "$B" >"$T/bridge.log" 2>&1; echo $? > "$T/rc"); }
 
 echo "=== D1 DRY_RUN=1: nothing reaches RSM, nothing is written, every action named ==="
+# tree_sum hashes every file and directory under the WebDAV tree, before and after.
 fixture; before="$(tree_sum "$T/web")"
 run env DRY_RUN=1
 chk "no request reached RSM" "$(reqs)" "0"
@@ -62,6 +63,13 @@ rm -rf "$T/web" "$T/rsm"; mkdir -p "$T/web" "$T/rsm"
 run env DRY_RUN=1
 chk "says it found nothing" "$(grep -c '^\[DRY-RUN\] found nothing to read' "$T/bridge.log")" "1"
 chk "does not exit 0" "$([ "$(cat "$T/rc")" != 0 ] && echo nonzero || echo zero)" "nonzero"
+
+echo "=== D5 an empty store with WebDAV saves warns ==="
+fixture; rm -rf "$T/rsm"; mkdir -p "$T/rsm"
+run env DRY_RUN=1
+chk "warns about the /rsm mount" "$(grep -c '^\[DRY-RUN\] WARNING: the store read no payloads while WebDAV read 1 save(s)' "$T/bridge.log")" "1"
+chk "still names the upload" "$(grep -c '^\[DRY-RUN\]   would upload Snes9x/Super Mario Kart.srm' "$T/bridge.log")" "1"
+chk "no request reached RSM" "$(reqs)" "0"
 
 echo "=== D4 a dry run still refuses a bad layout ==="
 fixture
