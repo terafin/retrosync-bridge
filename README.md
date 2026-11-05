@@ -24,6 +24,20 @@ docker run -d --name retrosync-bridge \
   ghcr.io/terafin/retrosync-bridge:latest
 ```
 
+## Dry run
+
+`DRY_RUN=1` makes one pass over the real trees and exits. It decides exactly as a live
+pass does, uploads and writes nothing, and lists every upload and write it would have
+made. It refuses a bad layout the same way, and fails if it read nothing, since a wrong
+mount reads nothing too. Run it before starting the service on new mounts:
+
+```bash
+docker run --rm -e DRY_RUN=1 \
+  -v /path/to/webdav/saves:/webdav:ro \
+  -v /path/to/rsm/saves:/rsm:ro \
+  ghcr.io/terafin/retrosync-bridge:latest
+```
+
 ## Image
 
 `ghcr.io/terafin/retrosync-bridge:latest` — auto-built by GitHub Actions on every push to `main`.

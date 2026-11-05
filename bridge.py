@@ -23,6 +23,21 @@ from pathlib import Path
 WEBDAV_SAVES = Path(os.environ.get("WEBDAV_SAVES", "/webdav"))
 RSM_SAVES = Path(os.environ.get("RSM_SAVES", "/rsm"))
 RSM_URL = os.environ.get("RSM_URL", "").strip().rstrip("/")
+# DRY_RUN=1 runs one full pass over the real trees and exits. Every decision is
+# made exactly as in a live pass; only the two places that act -- the POST in
+# upload_webdav_save and the copy in rsm_to_webdav -- record what they would do
+# instead of doing it. Nothing else checks this flag.
+DRY_RUN = os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
+PLANNED: list = []
+
+
+def dry_run_records(line: str) -> bool:
+    """In a dry run, note the action and return True so the caller skips it."""
+    if not DRY_RUN:
+        return False
+    PLANNED.append(line)
+    print(f"[DRY-RUN] {line}")
+    return True
 
 # RetroArch core name -> RSM system name
 CORE_MAP = {
@@ -202,6 +217,9 @@ def upload_webdav_save(webdav_file: Path, system_slug: str, game: str) -> None:
     accepts for PlayStation and Wii saves -- a stable key per game, not a
     claim to know the ROM's hash.
     """
+    if dry_run_records(f"would upload {webdav_file.parent.name}/{webdav_file.name} "
+                       f"-> {system_slug}/{game}"):
+        return
     if not RSM_URL:
         print("[ERR] RSM_URL is not set; cannot file "
               f"{webdav_file.name} (set it to the server's base URL)")
@@ -363,10 +381,12 @@ def rsm_to_webdav(rsm_file: Path) -> None:
         return
 
     webdav_dir = WEBDAV_SAVES / core
-    webdav_dir.mkdir(parents=True, exist_ok=True)
     dest = webdav_dir / f"{game}{rsm_file.suffix}"
     if dest.exists() and file_hash(rsm_file) == file_hash(dest):
         return
+    if dry_run_records(f"would write {core}/{dest.name} <- {system}/{game}"):
+        return
+    webdav_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         shutil.copy2(rsm_file, dest)
@@ -462,20 +482,53 @@ def layout_problem() -> str | None:
     return None
 
 
-def initial_sync() -> None:
+def initial_sync() -> tuple | None:
+    """One pass. Returns (WebDAV saves read, store payloads read), or None if
+    the layout check refused to run it."""
     problem = layout_problem()
     if problem:
         print(f"[ERR] not syncing: {problem}; check the /webdav and /rsm mounts")
-        return
+        return None
     print("[SYNC] Running sync pass...")
+    read_web = read_rsm = 0
     for srm in WEBDAV_SAVES.rglob("*.srm"):
+        read_web += 1
         webdav_to_rsm(srm)
     for payload in newest_payload_per_game_and_ext():
+        read_rsm += 1
         rsm_to_webdav(payload)
     print("[SYNC] Sync pass complete")
+    return read_web, read_rsm
+
+
+def dry_run() -> int:
+    """One pass that acts on nothing; prints every action it would take.
+
+    A pass that read nothing is not evidence of anything -- a wrong mount or an
+    empty tree reads nothing too -- so it says so and fails rather than
+    reporting zero actions as if that were a result.
+    """
+    print(f"[DRY-RUN] one pass over {WEBDAV_SAVES} and {RSM_SAVES}; nothing is uploaded or written")
+    counts = initial_sync()
+    if counts is None:
+        return 2
+    read_web, read_rsm = counts
+    print(f"[DRY-RUN] read {read_web} WebDAV save(s) and {read_rsm} store payload(s)")
+    if read_web == 0 and read_rsm == 0:
+        print(f"[DRY-RUN] found nothing to read under {WEBDAV_SAVES} or {RSM_SAVES}; "
+              "check the mounts before trusting this result")
+        return 3
+    uploads = [p for p in PLANNED if p.startswith("would upload")]
+    writes = [p for p in PLANNED if p.startswith("would write")]
+    print(f"[DRY-RUN] summary: {len(uploads)} upload(s) to RSM, {len(writes)} write(s) to WebDAV")
+    for line in PLANNED:
+        print(f"[DRY-RUN]   {line}")
+    return 0
 
 
 def main() -> None:
+    if DRY_RUN:
+        raise SystemExit(dry_run())
     interval = int(os.environ.get("POLL_INTERVAL_SECS", "60"))
     print(f"retrosync-bridge starting...\n  WebDAV: {WEBDAV_SAVES}\n  RSM:    {RSM_SAVES}\n  poll:   {interval}s")
 
