@@ -83,10 +83,9 @@ SHARED_CORES = {
 }
 
 
-# A Game Boy save is at most 32 KiB of cartridge RAM (plus an RTC trailer of a
-# few dozen bytes); GBA saves are 32/64/128 KiB, or 512 B / 8 KiB EEPROM. Only
-# sizes no Game Boy cartridge produces are taken as GBA. The Sega systems
-# Genesis Plus GX runs share their save sizes, so size never decides there.
+# Only sizes no Game Boy cartridge produces: the 32 KiB and EEPROM sizes are
+# shared, so they leave it ambiguous. The Sega systems Genesis Plus GX runs
+# share their save sizes, so size never decides there.
 GBA_ONLY_SIZES = {65536, 131072}
 
 
