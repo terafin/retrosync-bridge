@@ -443,7 +443,30 @@ def record_timestamp(payload: Path) -> float:
         return 0.0
 
 
+def layout_problem() -> str | None:
+    """Why the two trees cannot be the ones this bridge syncs, or None.
+
+    Both mounts are subpaths of one volume. Recreated without them, /webdav and
+    /rsm were both the volume's root: the WebDAV walk found the core folders a
+    level down, records_for() looked for <system>/<game> at the root, found no
+    record of anything, and every save was uploaded again. The two trees are
+    different folders, and neither holds the other; when that is not so, a pass
+    would read the store from the wrong place, so it does not run.
+    """
+    try:
+        web, rsm = WEBDAV_SAVES.resolve(), RSM_SAVES.resolve()
+    except OSError as exc:
+        return f"cannot resolve the trees: {exc}"
+    if web == rsm or web in rsm.parents or rsm in web.parents:
+        return f"{WEBDAV_SAVES} and {RSM_SAVES} are the same tree or one holds the other"
+    return None
+
+
 def initial_sync() -> None:
+    problem = layout_problem()
+    if problem:
+        print(f"[ERR] not syncing: {problem}; check the /webdav and /rsm mounts")
+        return
     print("[SYNC] Running sync pass...")
     for srm in WEBDAV_SAVES.rglob("*.srm"):
         webdav_to_rsm(srm)
